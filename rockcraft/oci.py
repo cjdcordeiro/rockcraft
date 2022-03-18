@@ -141,6 +141,11 @@ class Image:
         parts = self.image_name.split(":", 1)
         name = parts[0]
         src_path = self.path / f"{name}:{tag}"
+        _ = subprocess.check_output(
+            ["umoci", "config", "--image", f"{str(src_path)}", "--config.entrypoint", "/bin/pebble",
+             "--config.cmd", "help"],
+            text=True,
+        )
         _copy_image(f"oci:{str(src_path)}", f"oci-archive:{filename}:{tag}")
 
     def digest(self) -> bytes:

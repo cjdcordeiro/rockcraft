@@ -1,10 +1,10 @@
-name: smoke-test
+name: rock-base
 version: latest
 base: ubuntu:20.04
 parts:
-  foo:
-    source: .
-    plugin: dump
-    overlay-packages: [figlet]
-    overlay-script: |
-       chroot "$ROCKCRAFT_OVERLAY" /bin/bash -c "rm /etc/issue"
+  pebble:
+    source: https://github.com/canonical/pebble.git
+    source-type: git
+    build-packages:
+      - golang
+    plugin: go
