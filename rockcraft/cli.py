@@ -23,6 +23,8 @@ import craft_cli
 from craft_cli import ArgumentParsingError, EmitterMode, ProvideHelpException, emit
 
 from rockcraft import __version__
+from rockcraft.plugins import setup_plugins
+
 
 from . import commands
 
@@ -50,7 +52,7 @@ def run():
         logger.setLevel(logging.DEBUG)
 
     emit_args = {
-        "mode": EmitterMode.NORMAL,
+        "mode": EmitterMode.BRIEF,
         "appname": "rockcraft",
         "greeting": f"Starting Rockcraft {__version__}",
     }
@@ -71,7 +73,9 @@ def run():
             emit.message(f"rockcraft {__version__}")
         else:
             dispatcher.load_command(None)
+            setup_plugins()
             dispatcher.run()
+
         emit.ended_ok()
     except ProvideHelpException as err:
         print(err, file=sys.stderr)  # to stderr, as argparse normally does

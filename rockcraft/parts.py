@@ -90,9 +90,9 @@ class PartsLifecycle:
                     emit.progress(f"Executing parts lifecycle: {message}")
                     with emit.open_stream("Executing action") as stream:
                         aex.execute(action, stdout=stream, stderr=stream)
-                    emit.message(f"Executed: {message}", intermediate=True)
+                    emit.message(f"Executed: {message}")
 
-            emit.message("Executed parts lifecycle", intermediate=True)
+            emit.message("Executed parts lifecycle")
         except RuntimeError as err:
             raise RuntimeError(f"Parts processing internal error: {err}") from err
         except OSError as err:

@@ -60,11 +60,11 @@ def pack():
         base_image, source_image = oci.Image.from_docker_registry(
             project.base, image_dir=image_dir
         )
-    emit.message(f"Retrieved base {project.base}", intermediate=True)
+    emit.message(f"Retrieved base {project.base}")
 
     emit.progress(f"Extracting {base_image.image_name}")
     rootfs = base_image.extract_to(bundle_dir)
-    emit.message(f"Extracted {base_image.image_name}", intermediate=True)
+    emit.message(f"Extracted {base_image.image_name}")
 
     # TODO: check if destination image already exists, etc.
     project_base_image = base_image.copy_to(
@@ -84,7 +84,7 @@ def pack():
     new_image = project_base_image.add_layer(
         tag=project.version, layer_path=lifecycle.prime_dir
     )
-    emit.message("Created new layer", intermediate=True)
+    emit.message("Created new layer")
 
     if project.entrypoint:
         new_image.set_entrypoint(project.entrypoint)
@@ -111,7 +111,7 @@ def pack():
     emit.progress("Exporting to OCI archive")
     archive_name = f"{project.name}_{project.version}.rock"
     new_image.to_oci_archive(tag=project.version, filename=archive_name)
-    emit.message(f"Exported to OCI archive '{archive_name}'", intermediate=True)
+    emit.message(f"Exported to OCI archive '{archive_name}'")
 
 
 def pack_in_provider(project: Project):

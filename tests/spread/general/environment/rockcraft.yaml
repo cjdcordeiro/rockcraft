@@ -11,3 +11,18 @@ env:
 parts:
   part1:
     plugin: nil
+  # pebblepart:
+  #   plugin: pebble
+  #   source: https://github.com/canonical/pebble.git
+  
+  gopkg:
+    plugin: go
+    source: https://github.com/canonical/pebble.git
+    build-environment:
+        # https://github.com/golang/go/issues/33840
+        - CGO_ENABLED: "0"
+        # - GOBIN: "/bin"
+    build-snaps:
+        - go
+    prime:
+        - bin/pebble
