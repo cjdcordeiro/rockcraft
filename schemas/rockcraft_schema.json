@@ -1,5 +1,5 @@
 {
-  "tiasdtle": "Project",
+  "title": "Project",
   "description": "Rockcraft project definition.",
   "type": "object",
   "properties": {
