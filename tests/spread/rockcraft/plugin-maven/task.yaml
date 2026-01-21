@@ -1,0 +1,29 @@
+summary: Maven plugin tests
+
+environment:
+  BUILD_BASE/2404: ubuntu@24.04
+  # Disabled until we have a chisel branch
+  # https://github.com/canonical/rockcraft/issues/953
+  # BUILD_BASE/2510: ubuntu@25.10
+
+prepare: |
+  sed "s/BUILD_BASE/${BUILD_BASE}/" rockcraft-template.yaml > rockcraft.yaml
+
+execute: |
+  SCENARIO="plugin-maven"
+  ROCK_FILE="${SCENARIO}_0.1_amd64.rock"
+  IMAGE="${SCENARIO}:0.1"
+
+  # Build the rock & load it into docker
+  run_rockcraft pack
+  echo expecting ${ROCK_FILE}
+  test -f ${ROCK_FILE}
+  rockcraft.skopeo copy --insecure-policy  oci-archive:${ROCK_FILE} docker-daemon:${IMAGE}
+  rm ${ROCK_FILE}
+
+  # Run the packaged project
+  docker run --rm $IMAGE exec /usr/bin/java -jar /jar/sample-0.0.1-SNAPSHOT.jar | MATCH "hello world"
+  docker run --rm $IMAGE exec /bin/java -jar /jar/sample-0.0.1-SNAPSHOT.jar | MATCH "hello world"
+
+restore: |
+  rm rockcraft.yaml

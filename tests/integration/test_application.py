@@ -18,13 +18,12 @@ from pathlib import Path
 
 import pytest
 import yaml
-
-from rockcraft.application import APP_METADATA, Rockcraft
-from rockcraft.services import RockcraftServiceFactory
+from rockcraft import cli
 from rockcraft.services.image import ImageInfo, RockcraftImageService
+
 from tests.util import jammy_only
 
-pytestmark = [jammy_only, pytest.mark.usefixtures("reset_callbacks")]
+pytestmark = [jammy_only]
 
 
 # A Rockcraft project whose build step writes some global CRAFT_* variables to
@@ -41,6 +40,7 @@ license: Apache-2.0
 
 platforms:
     amd64:
+    arm64:
 
 parts:
     foo:
@@ -54,6 +54,7 @@ parts:
 """
 
 
+@pytest.mark.slow
 def test_global_environment(
     new_dir,
     monkeypatch,
@@ -75,12 +76,7 @@ def test_global_environment(
 
     monkeypatch.setattr(sys, "argv", ["rockcraft", "prime", "--destructive-mode"])
 
-    services = RockcraftServiceFactory(
-        # type: ignore # type: ignore[call-arg]
-        app=APP_METADATA,
-    )
-
-    app = Rockcraft(app=APP_METADATA, services=services)
+    app = cli._create_app()
     app.run()
 
     variables_yaml = Path(new_dir) / "stage/variables.yaml"

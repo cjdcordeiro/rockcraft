@@ -71,7 +71,7 @@ class Extension(abc.ABC):
         """Return the parts to add to parts."""
 
     @final
-    def validate(self, extension_name: str):
+    def validate(self, extension_name: str) -> None:
         """Validate that the extension can be used with the current project.
 
         :param extension_name: the name of the extension being parsed.
@@ -88,7 +88,9 @@ class Extension(abc.ABC):
         ):
             raise errors.ExtensionError(
                 f"Extension is experimental: {extension_name!r}",
-                docs_url="https://rockcraft.io/docs/supported-extensions",
+                doc_slug="/reference/extensions/",
+                resolution="Run with ROCKCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS=True to enable "
+                "experimental extensions.",
             )
 
         if self.is_experimental(base):

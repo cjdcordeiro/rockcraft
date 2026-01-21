@@ -1,6 +1,6 @@
 # -*- Mode:Python; indent-tabs-mode:nil; tab-width:4 -*-
 #
-# Copyright 2021-2022 Canonical Ltd.
+# Copyright 2021-2025 Canonical Ltd.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 3 as
@@ -16,28 +16,36 @@
 
 """Command-line application entry point."""
 
-import logging
-from typing import TYPE_CHECKING
+from typing import Any
 
-from rockcraft import plugins
+from craft_application import commands as appcommands
+from craft_cli import CommandGroup, Dispatcher
 
 from . import commands
-from .services import RockcraftServiceFactory
+from .application import Rockcraft
+from .services import RockcraftServiceFactory, register_rockcraft_services
 
-if TYPE_CHECKING:
-    from .application import Rockcraft
+COMMAND_GROUPS: list[CommandGroup] = [
+    CommandGroup(
+        "Extensions",
+        [
+            commands.ExtensionsCommand,
+            commands.ListExtensionsCommand,
+            commands.ExpandExtensionsCommand,
+        ],
+    ),
+    CommandGroup("Lifecycle", [appcommands.TestCommand, appcommands.RemoteBuild]),
+]
+
+
+def fill_command_groups(app: Rockcraft) -> None:
+    """Fill in the command groups for an application instance."""
+    for group in COMMAND_GROUPS:
+        app.add_command_group(group.name, group.commands)
 
 
 def run() -> int:
     """Command-line interface entrypoint."""
-    # Register our own plugins
-    plugins.register()
-
-    # set lib loggers to debug level so that all messages are sent to Emitter
-    for lib_name in ("craft_providers", "craft_parts"):
-        logger = logging.getLogger(lib_name)
-        logger.setLevel(logging.DEBUG)
-
     app = _create_app()
 
     return app.run()
@@ -49,26 +57,21 @@ def _create_app() -> "Rockcraft":
     # commands doesn't need to know *too much* of the application.
     from .application import APP_METADATA, Rockcraft
 
+    register_rockcraft_services()
     services = RockcraftServiceFactory(
-        # type: ignore # type: ignore[call-arg]
         app=APP_METADATA,
     )
 
     app = Rockcraft(app=APP_METADATA, services=services)
 
-    app.add_command_group(
-        "Other",
-        [
-            commands.InitCommand,
-        ],
-    )
-    app.add_command_group(
-        "Extensions",
-        [
-            commands.ExtensionsCommand,
-            commands.ListExtensionsCommand,
-            commands.ExpandExtensionsCommand,
-        ],
-    )
+    fill_command_groups(app)
 
     return app
+
+
+def get_app_info() -> tuple[Dispatcher, dict[str, Any]]:
+    """Retrieve application info. Used by craft-cli's completion module."""
+    app = _create_app()
+    dispatcher = app._create_dispatcher()  # type: ignore[reportPrivateUsage] # noqa: SLF001 (private member accessed)
+
+    return dispatcher, app.app_config

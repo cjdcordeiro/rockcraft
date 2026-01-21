@@ -13,28 +13,28 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
+import pathlib
 import sys
+import textwrap
 from pathlib import Path
-from unittest.mock import DEFAULT, call, patch
+from shutil import copytree
+from unittest.mock import DEFAULT, call
 
 import pytest
 import yaml
+from craft_application.services import StateService
 from craft_cli import emit
-
-from rockcraft import cli, services
-from rockcraft.application import Rockcraft
+from rockcraft import cli, extensions, services
+from rockcraft.application import APP_METADATA, Rockcraft
 from rockcraft.models import project
 
+DATA_DIR = pathlib.Path(__file__).parent.parent / "data"
 
-@pytest.fixture()
-def lifecycle_init_mock():
-    """Mock for ui.init."""
-    patcher = patch("rockcraft.commands.init.init")
-    yield patcher.start()
-    patcher.stop()
+# All of the tests in this module require patched services
+pytestmark = [pytest.mark.usefixtures("fake_services")]
 
 
+@pytest.mark.usefixtures("fake_project_file")
 def test_run_pack_services(mocker, monkeypatch, tmp_path):
     # Pretend it's running inside the managed instance
     monkeypatch.setenv("CRAFT_MANAGED_MODE", "1")
@@ -46,24 +46,32 @@ def test_run_pack_services(mocker, monkeypatch, tmp_path):
 
     fake_prime_dir = Path("/fake/prime/dir")
 
+    # In managed mode the StateService expects "/tmp/craft-state" to exist, but it
+    # doesn't in this case.
+    state_dir = tmp_path / "craft-state"
+    state_dir.mkdir()
+    mocker.patch.object(StateService, "_get_state_dir", return_value=state_dir)
+
     # Mock the relevant methods from the lifecycle and package services
     lifecycle_mocks = mocker.patch.multiple(
         services.RockcraftLifecycleService,
         setup=DEFAULT,
         prime_dir=fake_prime_dir,
         run=DEFAULT,
+        project_info=DEFAULT,
     )
 
     package_mocks = mocker.patch.multiple(
         services.RockcraftPackageService, write_metadata=DEFAULT, pack=DEFAULT
     )
+    package_mocks["pack"].return_value = [tmp_path / "project/my-rock.rock"]
 
     command_line = ["rockcraft", "pack"]
     mocker.patch.object(sys, "argv", command_line)
 
     cli.run()
 
-    lifecycle_mocks["run"].assert_called_once_with(step_name="prime", part_names=[])
+    lifecycle_mocks["run"].assert_called_once_with(step_name="prime")
 
     package_mocks["write_metadata"].assert_called_once_with(fake_prime_dir)
     package_mocks["pack"].assert_called_once_with(fake_prime_dir, Path())
@@ -72,22 +80,127 @@ def test_run_pack_services(mocker, monkeypatch, tmp_path):
     assert log_path.is_file()
 
 
-def test_run_init(mocker, lifecycle_init_mock):
+@pytest.fixture
+def valid_dir(new_dir, monkeypatch):
+    valid = pathlib.Path(new_dir) / "valid"
+    valid.mkdir()
+    monkeypatch.chdir(valid)
+
+
+@pytest.mark.usefixtures("valid_dir")
+def test_run_init(mocker):
     mock_ended_ok = mocker.spy(emit, "ended_ok")
     mocker.patch.object(sys, "argv", ["rockcraft", "init"])
+
     cli.run()
 
+    rockcraft_yaml_path = Path("rockcraft.yaml")
     rock_project = project.Project.unmarshal(
-        yaml.safe_load(
-            # pylint: disable=W0212
-            cli.commands.InitCommand._INIT_TEMPLATE_YAML
-        )
+        yaml.safe_load(rockcraft_yaml_path.read_text())
     )
 
     assert len(rock_project.summary) < 80
     assert len(rock_project.description.split()) < 100
-
-    assert lifecycle_init_mock.mock_calls == [
-        call(cli.commands.InitCommand._INIT_TEMPLATE_YAML)  # pylint: disable=W0212
-    ]
     assert mock_ended_ok.mock_calls == [call()]
+    assert rock_project.base == "ubuntu@24.04"
+
+
+@pytest.mark.usefixtures("valid_dir")
+def test_run_init_with_name(mocker):
+    mocker.patch.object(sys, "argv", ["rockcraft", "init", "--name=foobar"])
+
+    cli.run()
+
+    rockcraft_yaml_path = Path("rockcraft.yaml")
+    rock_project = project.Project.unmarshal(
+        yaml.safe_load(rockcraft_yaml_path.read_text())
+    )
+
+    assert rock_project.name == "foobar"
+
+
+@pytest.mark.usefixtures("valid_dir")
+def test_run_init_with_invalid_name(mocker):
+    mocker.patch.object(sys, "argv", ["rockcraft", "init", "--name=-f"])
+    return_code = cli.run()
+    assert return_code == 1
+
+
+def test_run_init_fallback_name(mocker, new_dir, monkeypatch):
+    mocker.patch.object(sys, "argv", ["rockcraft", "init"])
+    invalid_dir = pathlib.Path(new_dir) / "-f"
+    invalid_dir.mkdir()
+    monkeypatch.chdir(invalid_dir)
+
+    cli.run()
+
+    rockcraft_yaml_path = invalid_dir / "rockcraft.yaml"
+    rock_project = project.Project.unmarshal(
+        yaml.safe_load(rockcraft_yaml_path.read_text())
+    )
+
+    assert rock_project.name == "my-rock-name"
+
+
+def test_run_init_flask(mocker, emitter, monkeypatch, new_dir, tmp_path):
+    copytree(Path(f"{DATA_DIR}/flask"), tmp_path, dirs_exist_ok=True)
+
+    mocker.patch.object(
+        sys,
+        "argv",
+        ["rockcraft", "init", "--profile=flask-framework", "--name", "test-name"],
+    )
+
+    cli.run()
+
+    versioned_url = APP_METADATA.versioned_docs_url
+
+    rockcraft_yaml_path = Path("rockcraft.yaml")
+    rock_project_yaml = yaml.safe_load(rockcraft_yaml_path.read_text())
+
+    assert len(rock_project_yaml["summary"]) < 80
+    assert len(rock_project_yaml["description"].split()) < 100
+    expected_rockcraft_yaml_path = Path(tmp_path / "expected_rockcraft.yaml")
+    assert rockcraft_yaml_path.read_text() == expected_rockcraft_yaml_path.read_text()
+
+    emitter.assert_message(
+        textwrap.dedent(
+            f"""\
+        Go to {versioned_url}/reference/extensions/flask-framework to read more about the 'flask-framework' profile."""
+        )
+    )
+    # apply extension logic to make sure `rockcraft.yaml` file is proper
+    monkeypatch.setenv("ROCKCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS", "0")
+    project.Project.unmarshal(extensions.apply_extensions(tmp_path, rock_project_yaml))
+
+
+def test_run_init_django(mocker, emitter, monkeypatch, new_dir, tmp_path):
+    copytree(Path(f"{DATA_DIR}/django"), tmp_path, tmp_path, dirs_exist_ok=True)
+
+    mocker.patch.object(
+        sys,
+        "argv",
+        ["rockcraft", "init", "--profile=django-framework", "--name", "test-name"],
+    )
+
+    cli.run()
+
+    versioned_url = APP_METADATA.versioned_docs_url
+
+    rockcraft_yaml_path = Path(tmp_path / "rockcraft.yaml")
+    expected_rockcraft_yaml_path = Path(tmp_path / "expected_rockcraft.yaml")
+    rock_project_yaml = yaml.safe_load(rockcraft_yaml_path.read_text())
+
+    assert len(rock_project_yaml["summary"]) < 80
+    assert len(rock_project_yaml["description"].split()) < 100
+    assert rockcraft_yaml_path.read_text() == expected_rockcraft_yaml_path.read_text()
+
+    emitter.assert_message(
+        textwrap.dedent(
+            f"""\
+        Go to {versioned_url}/reference/extensions/django-framework to read more about the 'django-framework' profile."""
+        )
+    )
+    # apply extension logic to make sure `rockcraft.yaml` file is proper
+    monkeypatch.setenv("ROCKCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS", "0")
+    project.Project.unmarshal(extensions.apply_extensions(tmp_path, rock_project_yaml))

@@ -14,14 +14,21 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import argparse
+import copy
+import re
 import textwrap
 from pathlib import Path
 
 import pytest
-
+from craft_application import errors, util
 from rockcraft import extensions
 from rockcraft.commands import ExpandExtensionsCommand
-from tests.unit.testing.extensions import FULL_EXTENSION_YAML, FullExtension
+
+from tests.unit.testing.extensions import (
+    FULL_EXTENSION_PROJECT,
+    FULL_EXTENSION_YAML,
+    FullExtension,
+)
 
 # The project with the extension (FullExtension) expanded
 EXPECTED_EXPAND_EXTENSIONS = textwrap.dedent(
@@ -32,6 +39,12 @@ EXPECTED_EXPAND_EXTENSIONS = textwrap.dedent(
     summary: Project with extensions
     description: Project with extensions
     base: ubuntu@22.04
+    platforms:
+      amd64:
+        build-on:
+        - amd64
+        build-for:
+        - amd64
     license: Apache-2.0
     parts:
       foo:
@@ -42,21 +55,6 @@ EXPECTED_EXPAND_EXTENSIONS = textwrap.dedent(
       full-extension/new-part:
         plugin: nil
         source: null
-      pebble:
-        plugin: nil
-        stage-snaps:
-        - pebble/latest/stable
-        stage:
-        - bin/pebble
-        override-prime: |-
-          craftctl default
-          mkdir -p var/lib/pebble/default/layers
-          chmod 777 var/lib/pebble/default
-    platforms:
-      amd64:
-        build_on: null
-        build_for: null
-    build-base: ubuntu@22.04
     services:
       my-service:
         override: merge
@@ -68,17 +66,44 @@ EXPECTED_EXPAND_EXTENSIONS = textwrap.dedent(
 )
 
 
-@pytest.fixture()
+@pytest.fixture
 def setup_extensions(mock_extensions):
     extensions.register(FullExtension.NAME, FullExtension)
 
 
-def test_expand_extensions(setup_extensions, emitter, new_dir):
+@pytest.mark.usefixtures("tmp_path", "setup_extensions")
+def test_expand_extensions(emitter, fake_app_config):
     # ExpandExtensionsCommand loads "rockcraft.yaml" on the cwd
     project_file = Path("rockcraft.yaml")
     project_file.write_text(FULL_EXTENSION_YAML)
 
-    cmd = ExpandExtensionsCommand(None)
+    cmd = ExpandExtensionsCommand(fake_app_config)
     cmd.run(argparse.Namespace())
 
     emitter.assert_message(EXPECTED_EXPAND_EXTENSIONS)
+
+
+@pytest.mark.usefixtures("tmp_path", "setup_extensions")
+def test_expand_extensions_error(fake_app_config):
+    wrong_yaml = copy.deepcopy(FULL_EXTENSION_PROJECT)
+
+    # Misconfigure the plugin
+    wrong_yaml["parts"]["foo"]["plugin"] = "nonexistent"
+
+    # Misconfigure a service
+    wrong_yaml["services"]["my-service"]["override"] = "invalid"
+
+    project_file = Path("rockcraft.yaml")
+    dumped = util.dump_yaml(wrong_yaml)
+    project_file.write_text(dumped)
+
+    expected_message = re.escape(
+        "Bad rockcraft.yaml content:\n"
+        "- plugin not registered: 'nonexistent' (in field 'parts.foo', "
+        "input: {'plugin': 'nonexistent', 'stage-packages': ['new-package-1', 'old-package']})\n"
+        "- input should be 'merge' or 'replace' (in field 'services.my-service.override', input: 'invalid')"
+    )
+
+    cmd = ExpandExtensionsCommand(fake_app_config)
+    with pytest.raises(errors.CraftValidationError, match=expected_message):
+        cmd.run(argparse.Namespace())

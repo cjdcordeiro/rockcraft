@@ -15,6 +15,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 """Handling of files and directories for rocks image layers."""
+
 import os
 import tarfile
 from collections import defaultdict
@@ -240,7 +241,7 @@ def _symlink_target_in_base_layer(
     lower_path = base_layer_dir / relative_path
 
     if lower_path.is_symlink():
-        return Path(os.readlink(lower_path))
+        return lower_path.readlink()
 
     return None
 
@@ -250,7 +251,7 @@ def _all_compatible_directories(paths: list[Path]) -> bool:
     if not all(p.is_dir() for p in paths):
         return False
 
-    if len(paths) < 2:
+    if len(paths) < 2:  # noqa: PLR2004
         return True
 
     def stat_props(stat: os.stat_result) -> tuple[int, int, int]:
@@ -275,7 +276,7 @@ def _all_compatible_files(paths: list[Path]) -> bool:
     if not all(p.is_file() for p in paths):
         return False
 
-    if len(paths) < 2:
+    if len(paths) < 2:  # noqa: PLR2004
         return True
 
     first_file = paths[0]
@@ -294,5 +295,5 @@ def _all_compatible_files(paths: list[Path]) -> bool:
 
 def _get_permissions(filename: Path) -> Permissions:
     """Create a Permissions object for a given Path."""
-    stat = os.stat(filename)
+    stat = filename.stat()
     return Permissions(owner=stat.st_uid, group=stat.st_gid, mode=oct(stat.st_mode))

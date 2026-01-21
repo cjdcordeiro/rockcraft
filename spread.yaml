@@ -7,14 +7,17 @@ environment:
   PATH: /snap/bin:$PATH:$SNAPD_TESTING_TOOLS:$PROJECT_PATH/tools/spread
 
 include:
-    - tests/
-    - tools/
-    - docs/
-    - requirements-doc.txt
-    - requirements-jammy.txt
-    - Makefile
-    - rockcraft/
+  - tests/
+  - tools/
+  - docs/
+  - Makefile
+  - common.mk
+  - uv.lock
+  - pyproject.toml
+  - rockcraft/
 
+# The default spread timeout is 15 minutes. This is too short for some tests.
+kill-timeout: 25m
 backends:
   google:
     key: '$(HOST: echo "$SPREAD_GOOGLE_KEY")'
@@ -22,13 +25,13 @@ backends:
     halt-timeout: 2h
     systems:
       - ubuntu-20.04-64:
-          workers: 2
+          workers: 1
           storage: 40G
       - ubuntu-22.04-64:
-          workers: 2
+          workers: 6
           storage: 40G
-      - fedora-37-64:
-          workers: 2
+      - fedora-39-64:
+          workers: 1
           storage: 40G
 
 prepare: |
@@ -56,12 +59,15 @@ prepare: |
   # older linux releases have separate packages for lxd and lxc (lxd-client)
   if [ "$SPREAD_SYSTEM" = "ubuntu-18.04-64" ] || \
      [ "$SPREAD_SYSTEM" = "ubuntu-20.04-64" ] || \
-     [ "$SPREAD_SYSTEM" = "fedora-37-64" ]; then
+     [ "$SPREAD_SYSTEM" = "fedora-39-64" ]; then
     tests.pkgs remove lxd lxd-client
   else
     tests.pkgs remove lxd
   fi
-  snap install lxd --channel=latest/stable
+
+  # 5.21/stable is the latest stable LTS. Use 5.21/candidate as a "first line of
+  # defense" against LXD regressions.
+  snap install lxd --channel=5.21/candidate
 
   # Hold snap refreshes for 24h.
   snap set system refresh.hold="$(date --date=tomorrow +%Y-%m-%dT%H:%M:%S%:z)"
@@ -75,17 +81,11 @@ prepare: |
   lxd waitready --timeout=30
   lxd init --auto
 
-  if [ "$SPREAD_SYSTEM" = "fedora-37-64" ]; then
-    # Latest docker snap needs a more recent version of snapd than Fedora ships
-    # https://github.com/canonical/rockcraft/pull/277
-    snap install docker --channel=core18/stable
-  else
-    snap install docker
-  fi  
+  snap install docker
 
   # make sure docker is working
   retry -n 10 --wait 2 sh -c 'docker run --rm hello-world'
-  
+
   install_rockcraft
 
 restore-each: |
@@ -98,7 +98,7 @@ restore-each: |
         lxc --project=rockcraft delete --force "$instance"
       fi
     done
-  fi  
+  fi
 
 debug-each: |
   # output latest rockcraft log file on test failure
@@ -112,21 +112,36 @@ debug-each: |
   fi
 
 suites:
-  docs/tutorials/code/:
-    summary: tests basic tutorials from the docs
+  docs/tutorial/code/:
+    summary: tests tutorial from the docs
+    systems:
+      - ubuntu-22.04-64
 
   docs/how-to/code/:
     summary: tests how-to guides from the docs
     systems:
-    - ubuntu-22.04-64
+      - ubuntu-22.04-64
 
   docs/reference/code/:
     summary: tests reference code from the docs
+    systems:
+      - ubuntu-22.04-64
 
-  tests/spread/general/:
-    summary: tests for rockcraft core functionality
+  docs/reuse/tutorial/code/:
+    summary: tests reusable code from the docs
+    systems:
+      - ubuntu-22.04-64
 
-  tests/spread/large/:
-    summary: bigger tests that take longer to run
+  tests/spread/rockcraft/:
+    summary: tests for rockcraft core functionality, independent of host system
+    systems:
+      - ubuntu-22.04-64
+
+  tests/spread/foreign/:
+    summary: tests that rockcraft and rocks work on different host systems
+
+  tests/spread/manual/:
+    summary: manually-triggered tests, like bigger tests and flaky ones
     manual: true
-
+    systems:
+      - ubuntu-22.04-64

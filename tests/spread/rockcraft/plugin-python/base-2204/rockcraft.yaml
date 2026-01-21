@@ -1,0 +1,5 @@
+# pragma: no-schema-validate
+name: base-2204
+base: ubuntu@22.04
+# Remaining contents will come from "parts.yaml"
+#'/usr/lib/python3/dist-packages', '/lib/python3.10/site-packages'

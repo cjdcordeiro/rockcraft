@@ -6,23 +6,22 @@ on:
     branches:
       - "feature/**"
 
-
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout rockcraft
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Build rockcraft snap
         id: build-rockcraft
-        uses: snapcore/action-build@v1
+        uses: canonical/action-build@v1
 
       - name: Upload rockcraft snap
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: snap
           path: ${{ steps.build-rockcraft.outputs.snap }}
@@ -32,7 +31,7 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]
           then
-            echo "branch=pr-${{ github.event.number }}" >> "$GITHUB_OUTPUT"            
+            echo "branch=pr-${{ github.event.number }}" >> "$GITHUB_OUTPUT"
           else
             branch=$(echo ${GITHUB_REF#refs/*/} | sed -e 's|feature/\(.*\)|\1|')
             echo "branch=$branch" >> "$GITHUB_OUTPUT"
@@ -40,7 +39,7 @@ jobs:
 
       - name: Publish feature branch to edge/${{ steps.vars.outputs.branch }}
         if: ${{ env.SNAPCRAFT_STORE_CREDENTIALS != '' }}
-        uses: snapcore/action-publish@v1
+        uses: canonical/action-publish@v1
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
         with:

@@ -20,10 +20,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from craft_application import AppMetadata, ProjectService, ServiceFactory
+from craft_application import (
+    AppMetadata,
+    ProjectService,
+    ServiceFactory,
+    errors,
+)
 from craft_cli import emit
 
-from rockcraft import models, oci
+from rockcraft import oci
 
 
 @dataclass(frozen=True)
@@ -38,19 +43,17 @@ class ImageInfo:
 class RockcraftImageService(ProjectService):
     """Service to fetch and cache OCI images."""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         app: AppMetadata,
         services: ServiceFactory,
         *,
-        project: models.Project,
+        project_dir: Path,
         work_dir: Path,
-        build_for: str,
-    ):
-        super().__init__(app, services, project=project)
+    ) -> None:
+        super().__init__(app, services, project_dir=project_dir)
 
         self._work_dir = work_dir
-        self._build_for = build_for
         self._image_info: ImageInfo | None = None
 
     def obtain_image(self) -> ImageInfo:
@@ -63,28 +66,34 @@ class RockcraftImageService(ProjectService):
     def _create_image_info(self) -> ImageInfo:
         image_dir = self._work_dir / "images"
         bundle_dir = self._work_dir / "bundles"
-        build_for = self._build_for
-        project = cast(models.Project, self._project)
-        if project.base == "bare":
+
+        build_plan = self._services.get("build_plan").plan()
+
+        if len(build_plan) != 1:
+            raise errors.MultipleBuildsError
+
+        build_for = build_plan[0].build_for
+        project = self._services.get("project").get()
+        base = cast(str, project.base)
+        if base == "bare":
             base_image, source_image = oci.Image.new_oci_image(
-                f"{project.base}@latest",
+                f"{base}@latest",
                 image_dir=image_dir,
-                arch=self._build_for,
+                arch=build_for,
             )
         else:
-            emit.progress(f"Retrieving base {project.base} for {build_for}")
+            emit.progress(f"Retrieving base {base} for {build_for}")
             base_image, source_image = oci.Image.from_docker_registry(
-                project.base,
+                base,
                 image_dir=image_dir,
-                arch=self._build_for,
+                arch=build_for,
             )
-            emit.progress(f"Retrieved base {project.base} for {build_for}")
+            emit.progress(f"Retrieved base {base} for {build_for}")
 
         emit.progress(f"Extracting {base_image.image_name}")
         rootfs = base_image.extract_to(bundle_dir)
         emit.progress(f"Extracted {base_image.image_name}")
 
-        # TODO: check if destination image already exists, etc.
         project_base_image = base_image.copy_to(
             f"{project.name}:rockcraft-base", image_dir=image_dir
         )

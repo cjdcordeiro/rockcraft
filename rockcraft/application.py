@@ -16,19 +16,27 @@
 
 """Main Rockcraft Application."""
 
-from typing import Any
+from __future__ import annotations
 
-from craft_application import Application, AppMetadata, util
+from typing import TYPE_CHECKING
+
+from craft_application import Application, AppMetadata, errors
 from overrides import override  # type: ignore[reportUnknownVariableType]
 
-from rockcraft import models
+from rockcraft import plugins
 from rockcraft.models import project
+
+if TYPE_CHECKING:
+    from craft_parts.plugins.plugins import PluginType
 
 APP_METADATA = AppMetadata(
     name="rockcraft",
     summary="A tool to create OCI images",
     ProjectClass=project.Project,
     source_ignore_patterns=["*.rock"],
+    docs_url="https://documentation.ubuntu.com/rockcraft/{version}",
+    check_supported_base=True,
+    artifact_type="rock",
 )
 
 
@@ -36,18 +44,36 @@ class Rockcraft(Application):
     """Rockcraft application definition."""
 
     @override
-    def _extra_yaml_transform(self, yaml_data: dict[str, Any]) -> dict[str, Any]:
-        return models.transform_yaml(self._work_dir, yaml_data)
+    def _configure_services(self, provider_name: str | None) -> None:
+        self.services.update_kwargs(
+            "image", work_dir=self._work_dir, project_dir=self.project_dir
+        )
+        self.services.update_kwargs("init", default_name="my-rock-name")
+        super()._configure_services(provider_name)
 
     @override
-    def _configure_services(self, platform: str | None, build_for: str | None) -> None:
-        if build_for is None:
-            build_for = util.get_host_architecture()
+    def _get_app_plugins(self) -> dict[str, PluginType]:
+        """Get the plugins for this application.
 
-        self.services.set_kwargs("image", work_dir=self._work_dir, build_for=build_for)
-        self.services.set_kwargs(
-            "package",
-            platform=platform,
-            build_for=build_for,
-        )
-        super()._configure_services(platform, build_for)
+        Should be overridden by applications that need to register plugins at startup.
+        """
+        build_base = self._get_build_base()
+        return plugins.get_plugins(build_base)
+
+    @override
+    def _enable_craft_parts_features(self) -> None:
+        # pylint: disable=import-outside-toplevel
+        from craft_parts.features import Features
+
+        # enable the craft-parts Features that we use here, right before
+        # loading the project and validating its parts.
+        Features(enable_overlay=True)
+
+    def _get_build_base(self) -> str | None:
+        """Get the project's build-base, if the project file exists."""
+        try:
+            yaml_data = self.services.get("project").get_raw()
+        except errors.ProjectFileMissingError:
+            return None
+
+        return yaml_data.get("build-base") or yaml_data.get("base")

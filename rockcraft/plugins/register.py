@@ -17,10 +17,21 @@
 """Rockcraft-provided plugin registration."""
 
 import craft_parts
+from craft_parts.plugins.plugins import PluginType
 
-from .python_plugin import PythonPlugin
+from .ant_plugin import AntPlugin
+from .maven_plugin import MavenPlugin
+from .python_common import get_python_plugins
 
 
-def register() -> None:
-    """Register Rockcraft plugins."""
-    craft_parts.plugins.register({"python": PythonPlugin})
+def register(base: str | None) -> None:
+    """Register Rockcraft plugins for a given base."""
+    craft_parts.plugins.register(get_plugins(base))
+
+
+def get_plugins(base: str | None) -> dict[str, PluginType]:
+    """Get a dict of Rockcraft-specific plugins for a given base."""
+    return {
+        "ant": AntPlugin,
+        "maven": MavenPlugin,
+    } | get_python_plugins(base)

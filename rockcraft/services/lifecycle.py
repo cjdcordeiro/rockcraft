@@ -16,23 +16,16 @@
 
 """Rockcraft Lifecycle service."""
 
-import contextlib
+import re
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from craft_application import LifecycleService
-from craft_archives import repo  # type: ignore[import-untyped]
-from craft_cli import emit
-from craft_parts import Features, LifecycleManager, Step, callbacks
-from craft_parts.errors import CallbackRegistrationError
-from craft_parts.infos import ProjectInfo, StepInfo
+from craft_parts.infos import StepInfo
 from overrides import override  # type: ignore[reportUnknownVariableType]
 
 from rockcraft import layers
-from rockcraft.models.project import Project
-
-# Enable the craft-parts features that we use
-Features(enable_overlay=True)
+from rockcraft.plugins.python_common import get_python_plugins
 
 
 class RockcraftLifecycleService(LifecycleService):
@@ -46,77 +39,119 @@ class RockcraftLifecycleService(LifecycleService):
         from rockcraft.services import RockcraftServiceFactory
 
         # Configure extra args to the LifecycleManager
-        project = cast(Project, self._project)
-        project_vars = {"version": project.version}
+        project = self._services.get("project").get()
 
         services = cast(RockcraftServiceFactory, self._services)
         image_service = services.image
         image_info = image_service.obtain_image()
 
+        base = project.effective_base
+        usrmerged_by_default = True
+
+        # Bases older than 25.10 do not get usermerged install dirs by default
+        if base in ("ubuntu@20.04", "ubuntu@22.04", "ubuntu@24.04"):
+            usrmerged_by_default = False
+
         self._manager_kwargs.update(
             base_layer_dir=image_info.base_layer_dir,
             base_layer_hash=image_info.base_digest,
             base=project.base,
-            package_repositories=project.package_repositories or [],
+            build_base=project.build_base,
             project_name=project.name,
-            project_vars=project_vars,
             rootfs_dir=image_info.base_layer_dir,
+            usrmerged_by_default=usrmerged_by_default,
         )
-
         super().setup()
 
     @override
-    def run(self, step_name: str | None, part_names: list[str] | None = None) -> None:
-        """Run the lifecycle manager for the parts."""
-        # Overridden to configure package repositories.
-        project = cast(Project, self._project)
-        package_repositories = project.package_repositories
+    def post_prime(self, step_info: StepInfo) -> bool:
+        """Perform base-layer pruning on primed files."""
+        prime_dir = step_info.prime_dir
+        base_layer_dir = step_info.rootfs_dir
+        files: set[str]
 
-        if package_repositories is not None:
-            _install_package_repositories(package_repositories, self._lcm)
-            with contextlib.suppress(CallbackRegistrationError):
-                callbacks.register_configure_overlay(_install_overlay_repositories)
+        files = step_info.state.files if step_info.state else set()
+        layers.prune_prime_files(prime_dir, files, base_layer_dir)
 
-        try:
-            callbacks.register_post_step(_post_prime_callback, step_list=[Step.PRIME])
-            super().run(step_name, part_names)
-        finally:
-            callbacks.unregister_all()
+        _python_usrmerge_fix(step_info)
+        _python_v2_shebang_fix(step_info)
+
+        return True
 
 
-def _install_package_repositories(
-    package_repositories: list[dict[str, Any]] | None,
-    lifecycle_manager: LifecycleManager,
-) -> None:
-    """Install package repositories in the environment."""
-    if not package_repositories:
-        emit.debug("No package repositories specified, none to install.")
+def _python_usrmerge_fix(step_info: StepInfo) -> None:
+    """Fix 'lib64' symlinks created by the Python plugin on ubuntu@24.04 projects."""
+    build_base = step_info.project_info.build_base
+    if build_base != "ubuntu@24.04":
+        # The issue only affects rocks with 24.04 build base.
         return
 
-    refresh_required = repo.install(package_repositories, key_assets=Path("/dev/null"))
-    if refresh_required:
-        emit.progress("Refreshing repositories")
-        lifecycle_manager.refresh_packages_list()
+    state = step_info.state
+    if state is None:
+        # Can't inspect the files without a StepState.
+        return
 
-    emit.progress("Package repositories installed")
+    if state.part_properties["plugin"] not in get_python_plugins(build_base):
+        # Be conservative and don't try to fix the files if they didn't come
+        # from a Python plugin.
+        return
 
+    if "lib64" not in state.files:
+        return
 
-def _install_overlay_repositories(overlay_dir: Path, project_info: ProjectInfo) -> None:
-    if project_info.base != "bare":
-        package_repositories = project_info.package_repositories
-        repo.install_in_root(
-            project_repositories=package_repositories,
-            root=overlay_dir,
-            key_assets=Path("/dev/null"),
-        )
-
-
-def _post_prime_callback(step_info: StepInfo) -> bool:
     prime_dir = step_info.prime_dir
-    base_layer_dir = step_info.rootfs_dir
-    files: set[str]
+    lib64 = prime_dir / "lib64"
+    if lib64.is_symlink() and lib64.readlink() == Path("lib"):
+        lib64.unlink()
 
-    files = step_info.state.files if step_info.state else set()
 
-    layers.prune_prime_files(prime_dir, files, base_layer_dir)
-    return True
+def _python_v2_shebang_fix(step_info: StepInfo) -> None:
+    build_base = step_info.project_info.build_base
+    if build_base in ("ubuntu@20.04", "ubuntu@22.04", "ubuntu@24.04"):
+        # The issue only affects rocks with 25.10 and newer build bases.
+        return
+
+    state = step_info.state
+    if state is None:
+        # Can't inspect the files without a StepState.
+        return
+
+    if state.part_properties["plugin"] not in get_python_plugins(build_base):
+        # Be conservative and don't try to fix the files if they didn't come
+        # from a Python plugin.
+        return
+
+    prime_dir = step_info.prime_dir
+
+    # The Python interpreter can come from either the part's install dir, or from the
+    # stage.
+    install_dir = step_info.part_install_dir
+    install_re = re.compile(f"#!{install_dir}/.*/python3.*$")
+    stage_dir = step_info.stage_dir
+    stage_re = re.compile(f"#!{stage_dir}/.*/python3.*$")
+
+    regex_and_dirs = [(install_re, install_dir), (stage_re, stage_dir)]
+
+    for filename in state.files:
+        filepath = prime_dir / filename
+        if not filepath.is_file():
+            # File might have been pruned out
+            continue
+        newline = ""
+        remainder = ""
+        replaced = False
+        with filepath.open("r") as f:
+            # Read the first line and check whether it matches the install or stage dirs.
+            try:
+                line = f.readline()
+            except UnicodeDecodeError:
+                # File is not text; ignore it
+                continue
+            for base_re, base_dir in regex_and_dirs:
+                if base_re.match(line):
+                    newline = line.replace(str(base_dir), "")
+                    remainder = f.read()
+                    replaced = True
+                    break
+        if replaced:
+            filepath.write_text(newline + remainder)

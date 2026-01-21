@@ -1,25 +1,57 @@
 .. _how-to:
 
 How-to guides
-*************
+=============
 
-If you have a specific goal but are already familiar with Rockcraft, our How-to
-guides have more in-depth detail than our tutorials and can be applied to a
-broader set of applications.
+These guides accompany you through crafting, chiselling, and publishing rocks with
+Rockcraft.
 
-They'll help you achieve an end result but may require you to understand and
-adapt the steps to fit your specific requirements.
+
+Crafting
+--------
+
+The starting point of a rock is a Rockcraft project, which defines what goes into the
+rock and what machinery builds it. Once a project is complete, the rock can be packed
+either locally or remotely, and then published to an image registry.
+
+- :ref:`how-to-migrate-a-docker-image-to-a-chiselled-rock`
+- :ref:`how-to-publish-a-rock-to-a-registry`
+
+
+Chiselling
+----------
+
+Containers often contain redundant or unneeded software in their baseline systems.
+Chisel cuts software collections into manageable slices that can layered within rocks to
+make them leaner.
+
+- :ref:`how-to-chisel-a-rock`
+- :ref:`how-to-create-a-package-slice-for-chisel`
+
+
+12-factor web app rocks
+-----------------------
+
+Rocks are especiallys suitable as containers for 12-factor apps and their components.
+
+- :ref:`how-to-manage-a-12-factor-app-rock`
+
+
+Documentation
+-------------
+
+The Rockcraft documentation is always evolving. We welcome people of all skill levels to
+contribute to it.
+
+- :ref:`how-to-contribute-to-rockcraft-documentation`
+- :ref:`how-to-build-the-documentation`
 
 .. toctree::
-   :maxdepth: 1
+    :hidden:
+    :maxdepth: 1
 
-   Get started - quick guide <get-started>
-   Use Rockcraft's GitHub Action <rockcraft-pack-action>
-   Contribute to Rockcraft documentation <contribute-docs>
-   Build the documentation <build-docs>
-   Cut existing slices with Chisel <use-chisel>
-   Create a package slice for Chisel <create-slice>
-   Install a custom package slice <install-slice>
-   Publish a slice definition <publish-slice>
-   Convert an entrypoint to a Pebble layer <convert-to-pebble-layer>
-   Publish a rock to a registry <publish-a-rock.rst>
+    get-started
+    crafting/index
+    chiselling/index
+    Rocks for 12-factor apps <web-app-rocks/index>
+    documentation/index

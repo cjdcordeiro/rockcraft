@@ -20,7 +20,6 @@ import hashlib
 import json
 import logging
 import os
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -34,6 +33,7 @@ from craft_cli import emit
 
 from rockcraft import errors, layers
 from rockcraft.architectures import SUPPORTED_ARCHS
+from rockcraft.constants import ROCK_CONTROL_DIR
 from rockcraft.pebble import Pebble
 from rockcraft.utils import get_snap_command_path
 
@@ -47,6 +47,8 @@ REGISTRY_URL = ECR_URL
 
 # The number of times to try downloading an image from `REGISTRY_URL`.
 MAX_DOWNLOAD_RETRIES = 5
+
+MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
 
 
 @dataclass(frozen=True)
@@ -103,8 +105,8 @@ class Image:
         _copy_image(
             source_image,
             f"oci:{image_target}",
-            copy_params=copy_params,
             *platform_params,
+            copy_params=copy_params,
         )
 
         return cls(image_name=image_name, path=image_dir), source_image
@@ -146,8 +148,10 @@ class Image:
         # umoci config, but not the variant. Need to do it manually
         _config_image(image_target, ["--architecture", mapping.go_arch, "--no-history"])
 
-        if mapping.go_variant:
-            _inject_architecture_variant(Path(image_target_no_tag), mapping.go_variant)
+        _inject_oci_fields(
+            image_target,
+            arch_variant=mapping.go_variant,
+        )
 
         # for new OCI images, the source image corresponds to the newly generated image
         return (
@@ -268,25 +272,25 @@ class Image:
                 )
             )
 
-        user_files[
-            "passwd"
-        ] += f"{username}:x:{uid}:{uid}::/{Pebble.PEBBLE_PATH}:/usr/bin/false\n"
+        user_files["passwd"] += (
+            f"{username}:x:{uid}:{uid}::/{Pebble.PEBBLE_PATH}:/usr/bin/false\n"
+        )
         user_files["group"] += f"{username}:x:{uid}:\n"
 
         with tempfile.TemporaryDirectory() as tmpfs:
             tmpfs_etc = Path(tmpfs) / "etc"
             tmpfs_etc.mkdir(parents=True, exist_ok=True)
-            with open(tmpfs_etc / "passwd", "a+") as passwdf:
+            with (tmpfs_etc / "passwd").open("a+") as passwdf:
                 passwdf.write(user_files["passwd"])
 
-            with open(tmpfs_etc / "group", "a+") as groupf:
+            with (tmpfs_etc / "group").open("a+") as groupf:
                 groupf.write(user_files["group"])
 
             if user_files["shadow"]:
-                days_since_epoch = (datetime.utcnow() - datetime(1970, 1, 1)).days
+                days_since_epoch = (datetime.utcnow() - datetime(1970, 1, 1)).days  # type: ignore[reportDeprecated]
 
                 # only add the shadow file if there's already one in the base image
-                with open(tmpfs_etc / "shadow", "a+") as shadowf:
+                with (tmpfs_etc / "shadow").open("a+") as shadowf:
                     shadowf.write(
                         user_files["shadow"]
                         + f"{username}:!:{days_since_epoch}::::::\n"
@@ -300,6 +304,15 @@ class Image:
         image_path = self.path / self.image_name
         output: bytes = _process_run(
             ["umoci", "stat", "--json", "--image", str(image_path)]
+        ).stdout
+        result: dict[str, Any] = json.loads(output)
+        return result
+
+    def get_manifest(self) -> dict[str, Any]:
+        """Obtain the image manifest, as reported by "skopeo inspect --raw"."""
+        image_path = self.path / self.image_name
+        output: bytes = _process_run(
+            ["skopeo", "inspect", "--raw", f"oci:{str(image_path)}"]
         ).stdout
         result: dict[str, Any] = json.loads(output)
         return result
@@ -343,50 +356,58 @@ class Image:
         src_path = self.path / f"{name}:{tag}"
         _copy_image(f"oci:{str(src_path)}", f"oci-archive:{filename}:{tag}")
 
-    def set_default_user(self, user: str) -> None:
+    def set_default_user(self, userid: int, username: str) -> None:
         """Set the default runtime user for the OCI image.
 
-        :param user: name of the default user (must already exist)
+        :param userid: userid of the default user (must already exist)
+        :param username: username of the default user (must already exist)
         """
         image_path = self.path / self.image_name
-        params = ["--clear=config.entrypoint", "--config.user", user]
+        params = ["--clear=config.entrypoint", "--config.user", str(userid)]
         _config_image(image_path, params)
-        emit.progress(f"Default user set to {user}")
+        emit.progress(f"Default user set to {userid} ({username})")
 
-    def set_entrypoint(self, entrypoint_service: str | None = None) -> None:
+    def set_entrypoint(self, entrypoint: list[str]) -> None:
         """Set the OCI image entrypoint. It is always Pebble."""
         emit.progress("Configuring entrypoint...")
         image_path = self.path / self.image_name
-        entrypoint = [f"/{Pebble.PEBBLE_BINARY_PATH}", "enter", "--verbose"]
-        if entrypoint_service:
-            entrypoint.extend(["--args", entrypoint_service])
+
         params = ["--clear=config.entrypoint"]
         for entry in entrypoint:
             params.extend(["--config.entrypoint", entry])
+
         params.extend(["--clear=config.cmd"])
         _config_image(image_path, params)
         emit.progress(f"Entrypoint set to {entrypoint}")
 
-    def set_cmd(self, command: str | None = None) -> None:
-        """Set the OCI image CMD."""
+    def set_cmd(self, command: list[str] | None = None) -> None:
+        """Set the OCI image CMD.
+
+        :param command: List of CMD arguments to set, or None to clear CMD without setting new values
+        """
         emit.progress("Configuring CMD...")
         image_path = self.path / self.image_name
         cmd_params = ["--clear=config.cmd"]
-        command_sh_args = shlex.split(command or "")
-        try:
-            opt_args = command_sh_args[
-                command_sh_args.index("[") + 1 : command_sh_args.index("]")
-            ]
-        except ValueError:
-            emit.debug(
-                f"The entrypoint-service command '{command}' has no default "
-                + "arguments. CMD won't be set."
-            )
-            return
-        for arg in opt_args:
+
+        for arg in command or []:
             cmd_params.extend(["--config.cmd", arg])
         _config_image(image_path, cmd_params)
-        emit.progress(f"CMD set to {opt_args}")
+        emit.progress(f"CMD set to {command}")
+
+    def set_default_path(self, base: str) -> None:
+        """Set the default PATH on the image (only for bare rocks)."""
+        if base != "bare":
+            emit.debug(f"Not setting a PATH on the image as base is {base!r}")
+            return
+
+        # Follow Pebble's lead here: if PATH is empty, use the standard one.
+        # This means that containers that bypass the pebble entrypoint will
+        # have the same behavior as PATH-less pebble services.
+        pebble_path = Pebble.DEFAULT_ENV_PATH
+        image_path = self.path / self.image_name
+
+        emit.debug(f"Setting bare-based rock PATH to {pebble_path!r}")
+        _config_image(image_path, ["--config.env", f"PATH={pebble_path}"])
 
     def set_pebble_layer(
         self,
@@ -461,7 +482,7 @@ class Image:
         local_control_data_path = Path(tempfile.mkdtemp())
 
         # the rock control data structure starts with the folder ".rock"
-        control_data_rock_folder = local_control_data_path / ".rock"
+        control_data_rock_folder = local_control_data_path / ROCK_CONTROL_DIR
         control_data_rock_folder.mkdir()
 
         rock_metadata_file = control_data_rock_folder / "metadata.yaml"
@@ -503,6 +524,16 @@ class Image:
         _config_image(image_path, annotation_params)
         emit.progress(f"Labels and annotations set to {labels_list}")
 
+    def set_media_type(
+        self,
+    ) -> None:
+        """Set the media type in the target image's manifest."""
+        image_path = self.path / self.image_name
+        _inject_oci_fields(
+            image_path,
+            arch_variant=None,
+        )
+
 
 def _copy_image(
     source: str,
@@ -520,9 +551,7 @@ def _copy_image(
         [
             "skopeo",
             "--insecure-policy",
-        ]
-        + list(system_params)
-        + [
+            *list(system_params),
             "copy",
             *copy_extra,
             source,
@@ -533,7 +562,7 @@ def _copy_image(
 
 def _config_image(image_path: Path, params: list[str]) -> None:
     """Configure the OCI image."""
-    _process_run(["umoci", "config", "--image", str(image_path)] + params)
+    _process_run(["umoci", "config", "--image", str(image_path), *params])
 
 
 def _add_layer_into_image(
@@ -552,52 +581,74 @@ def _add_layer_into_image(
         str(image_path),
         str(archived_content),
     ] + [arg_val for k, v in kwargs.items() for arg_val in [k, v]]
-    _process_run(cmd + ["--history.created_by", " ".join(cmd)])
+    _process_run([*cmd, "--history.created_by", " ".join(cmd)])
 
 
-def _inject_architecture_variant(image_path: Path, variant: str) -> None:
-    """Inject architecture variant into existing OCI Image config.
+def _inject_oci_fields(image_path: Path, arch_variant: str | None = None) -> None:
+    """Inject architecture variant and mediaType into existing OCI Image config.
 
-    :param image_path: path of the OCI image, in the format <image>:<tar>
-    :param variant: name of the variant to inject in the OCI config
+    :param image_path: path of the OCI image
+    :param arch_variant: name of the variant to inject in the OCI config
     """
+    image_path_no_tag, image_tag = str(image_path).split(":", maxsplit=1)
     # pylint: disable=too-many-locals
-    blobs_path = image_path / "blobs" / "sha256"
+    blobs_path = Path(image_path_no_tag) / "blobs" / "sha256"
     # Get the top level OCI index
-    tl_index_path = image_path / "index.json"
+    tl_index_path = Path(image_path_no_tag) / "index.json"
     tl_index = json.loads(tl_index_path.read_bytes())
 
-    # Since this is a 1-arch OCI image, the OCI top level index
-    # points to a manifest (otherwise it would be a manifest list)
-    manifest_digest = tl_index["manifests"][0]["digest"].split(":")[-1]
+    # The manifest of the image being built contains both the base image
+    # and the target image. We need to find the manifest that matches the
+    # tag of the target image, and ensure the tag is not ambiguous.
+    manifest_digests: list[tuple[str, int]] = [
+        (manifest["digest"].split(":")[-1], i)
+        for i, manifest in enumerate(tl_index["manifests"])
+        if (a := manifest.get("annotations"))
+        and a.get("org.opencontainers.image.ref.name") == image_tag
+    ]
+    if not manifest_digests:
+        raise errors.RockcraftError(
+            f"Cannot find manifest for {image_tag} in {tl_index_path}"
+        )
+    if len(manifest_digests) > 1:
+        raise errors.RockcraftError(
+            f"Found multiple manifests for {image_tag} in {tl_index_path}"
+        )
+    manifest_digest, idx = manifest_digests[0]
     manifest_path = blobs_path / manifest_digest
     manifest_content = json.loads(manifest_path.read_bytes())
 
-    # Get the current OCI Image Config
-    image_config_digest = manifest_content["config"]["digest"].split(":")[-1]
-    image_config_path = blobs_path / image_config_digest
-    image_config_content = json.loads(image_config_path.read_bytes())
+    if "mediaType" not in manifest_content:
+        # Set the mediaType
+        manifest_content["mediaType"] = MANIFEST_MEDIA_TYPE
 
-    # Set the variant
-    image_config_content["variant"] = variant
+    if arch_variant:
+        # Get the current OCI Image Config
+        image_config_digest = manifest_content["config"]["digest"].split(":")[-1]
+        image_config_path = blobs_path / image_config_digest
+        image_config_content = json.loads(image_config_path.read_bytes())
+        # Set the variant
+        image_config_content["variant"] = arch_variant
 
-    # The OCI image config has changed, so now we need to
-    # regenerate the digests
-    new_image_config_bytes = json.dumps(image_config_content).encode("utf-8")
-    new_image_config_digest = hashlib.sha256(new_image_config_bytes).hexdigest()
-    new_image_config_path = blobs_path / new_image_config_digest
-    new_image_config_path.write_bytes(new_image_config_bytes)
+        # The OCI image config has changed, so now we need to
+        # regenerate the digests
+        new_image_config_bytes = json.dumps(image_config_content).encode("utf-8")
+        new_image_config_digest = hashlib.sha256(new_image_config_bytes).hexdigest()
+        new_image_config_path = blobs_path / new_image_config_digest
+        new_image_config_path.write_bytes(new_image_config_bytes)
+        image_config_path.unlink()
 
-    manifest_content["config"]["digest"] = f"sha256:{new_image_config_digest}"
-    manifest_content["config"]["size"] = len(new_image_config_bytes)
+        manifest_content["config"]["digest"] = f"sha256:{new_image_config_digest}"
+        manifest_content["config"]["size"] = len(new_image_config_bytes)
 
     new_manifest_bytes = json.dumps(manifest_content).encode("utf-8")
     new_manifest_digest = hashlib.sha256(new_manifest_bytes).hexdigest()
     new_manifest_path = blobs_path / new_manifest_digest
     new_manifest_path.write_bytes(new_manifest_bytes)
+    manifest_path.unlink()
 
-    tl_index["manifests"][0]["digest"] = f"sha256:{new_manifest_digest}"
-    tl_index["manifests"][0]["size"] = len(new_manifest_bytes)
+    tl_index["manifests"][idx]["digest"] = f"sha256:{new_manifest_digest}"
+    tl_index["manifests"][idx]["size"] = len(new_manifest_bytes)
     tl_index_path.write_bytes(json.dumps(tl_index).encode("utf-8"))
 
 

@@ -1,148 +1,95 @@
-.PHONY: help
-help: ## Show this help.
-	@printf "%-40s %s\n" "Target" "Description"
-	@printf "%-40s %s\n" "------" "-----------"
-	@fgrep " ## " $(MAKEFILE_LIST) | fgrep -v grep | awk -F ': .*## ' '{$$1 = sprintf("%-40s", $$1)} 1'
+PROJECT=rockcraft
+# Define when more than the main package tree requires coverage
+# like is the case for snapcraft (snapcraft and snapcraft_legacy):
+# COVERAGE_SOURCE="starcraft"
+UV_TEST_GROUPS := "--group=dev"
+UV_DOCS_GROUPS := "--group=docs"
+UV_LINT_GROUPS := "--group=lint" "--group=types"
+UV_TICS_GROUPS := "--group=tics"
 
-.PHONY: autoformat
-autoformat: ## Run automatic code formatters.
-	isort .
-	autoflake rockcraft/ tests/
-	black .
-	ruff check --fix-only rockcraft tests
+# If you have dev dependencies that depend on your distro version, uncomment these:
+ifneq ($(wildcard /etc/os-release),)
+include /etc/os-release
+endif
+ifdef VERSION_CODENAME
+UV_TEST_GROUPS += "--group=dev-$(VERSION_CODENAME)"
+UV_DOCS_GROUPS += "--group=dev-$(VERSION_CODENAME)"
+UV_LINT_GROUPS += "--group=dev-$(VERSION_CODENAME)"
+UV_TICS_GROUPS += "--group=dev-$(VERSION_CODENAME)"
+endif
 
-.PHONY: clean
-clean: ## Clean artefacts from building, testing, etc.
-	rm -rf build/
-	rm -rf dist/
-	rm -rf .eggs/
-	find . -name '*.egg-info' -exec rm -rf {} +
-	find . -name '*.egg' -exec rm -f {} +
-	rm -rf docs/_build/
-	rm -f docs/rockcraft.*
-	rm -f docs/modules.rst
-	rm -rf docs/reference/commands
-	find . -name '*.pyc' -exec rm -f {} +
-	find . -name '*.pyo' -exec rm -f {} +
-	find . -name '*~' -exec rm -f {} +
-	find . -name '__pycache__' -exec rm -rf {} +
-	rm -rf .tox/
-	rm -f .coverage
-	rm -rf htmlcov/
-	rm -rf .pytest_cache
-	$(MAKE) -C docs clean
-	rm -rf .mypy_cache
+include common.mk
 
-.PHONY: coverage
-coverage: ## Run pytest with coverage report.
-	coverage run --source craft_sore -m pytest
-	coverage report -m
-	coverage html
-
-.PHONY: preparedocs
-preparedocs: ## move file from the sphinx-starter-pack to docs folder
-	cp docs/sphinx-starter-pack/.sphinx/_static/* docs/_static
-	mkdir -p docs/_templates
-	cp -R docs/sphinx-starter-pack/.sphinx/_templates/* docs/_templates
-	cp docs/sphinx-starter-pack/.sphinx/spellingcheck.yaml docs/spellingcheck.yaml
-
-.PHONY: installdocs
-installdocs: preparedocs ## install documentation dependencies.
-	$(MAKE) -C docs install
-
-.PHONY: docs
-docs: ## Generate documentation.
-	rm -f docs/rockcraft.rst
-	rm -f docs/modules.rst
-	$(MAKE) -C docs clean-doc
-	$(MAKE) -C docs html
-
-.PHONY: rundocs
-rundocs: ## start a documentation runserver
-	$(MAKE) -C docs run
-
-.PHONY: dist
-dist: clean ## Build python package.
-	python setup.py sdist
-	python setup.py bdist_wheel
-	ls -l dist
-
-.PHONY: freeze-requirements
-freeze-requirements:  ## Re-freeze requirements.
-	tools/freeze-requirements.sh
-
-.PHONY: install
-install: clean ## Install python package.
-	python setup.py install
+.PHONY: format
+format: format-ruff format-codespell format-prettier format-pre-commit  ## Run all automatic formatters
 
 .PHONY: lint
-lint: test-black test-codespell test-flake8 test-isort test-mypy test-pydocstyle test-pyright test-pylint test-sphinx-lint test-shellcheck ## Run all linting tests.
+lint: lint-ruff lint-codespell lint-mypy lint-prettier lint-pyright lint-shellcheck lint-docs lint-twine lint-uv-lockfile  ## Run all linters
 
-.PHONY: release
-release: dist ## Release with twine.
-	twine upload dist/*
+.PHONY: pack
+pack: pack-pip pack-snap  ## Build all packages
 
-.PHONY: test-black
-test-black:
-	black --check --diff .
+.PHONY: pack-snap
+pack-snap: snap/snapcraft.yaml  ##- Build snap package
+ifeq ($(shell which snapcraft),)
+	sudo snap install --classic snapcraft
+endif
+	snapcraft pack
 
-.PHONY: test-codespell
-test-codespell:
-	codespell .
+schema: install-uv  ## Generate the schema file.
+	mkdir -p schema
+	uv run python tools/schema/schema.py > schema/rockcraft.json
 
-.PHONY: test-flake8
-test-flake8:
-	flake8 rockcraft tests
+validate-schema: install-ajv-cli
+	# Find all the rockcraft.yaml files that don't contain "# pragma: no-schema-validate"
+	find . -type f -name rockcraft.yaml -exec grep -HL '# pragma: no-schema-validate' '{}' '+' | \
+	xargs -I {} ajv validate --strict=false --spec=draft2020 -s schema/rockcraft.json -d {}
+    # The line below can be used to use the go-based jv command instead.
+    # xargs -I {} sh -c 'echo "\e[32mValidating {}\e[0m"; jv schema/rockcraft.json {}'
 
-.PHONY: test-ruff
-test-ruff:
-	ruff rockcraft tests
+# Find dependencies that need installing
+APT_PACKAGES :=
+ifeq ($(wildcard /usr/include/libxml2/libxml/xpath.h),)
+APT_PACKAGES += libxml2-dev
+endif
+ifeq ($(wildcard /usr/include/libxslt/xslt.h),)
+APT_PACKAGES += libxslt1-dev
+endif
+ifeq ($(wildcard /usr/share/doc/python3-venv/copyright),)
+APT_PACKAGES += python3-venv
+endif
+ifeq ($(wildcard /usr/share/doc/libyaml-dev/copyright),)
+APT_PACKAGES += libyaml-dev
+endif
+ifeq ($(wildcard /usr/share/doc/fuse-overlayfs/copyright),)
+APT_PACKAGES += fuse-overlayfs
+endif
+ifeq ($(wildcard /usr/share/doc/umoci/copyright),)
+APT_PACKAGES += umoci
+endif
+ifeq ($(wildcard /usr/share/doc/skopeo/copyright),)
+APT_PACKAGES += skopeo
+endif
 
-.PHONY: test-integrations
-test-integrations: ## Run integration tests.
-	pytest tests/integration
+# Used for installing build dependencies in CI.
+.PHONY: install-build-deps
+install-build-deps: install-lint-build-deps
+ifeq ($(APT_PACKAGES),)
+else ifeq ($(shell which apt-get),)
+	$(warning Cannot install build dependencies without apt.)
+	$(warning Please ensure the equivalents to these packages are installed: $(APT_PACKAGES))
+else
+	sudo $(APT) install $(APT_PACKAGES)
+endif
 
-.PHONY: test-isort
-test-isort:
-	isort --check rockcraft tests
+# If additional build dependencies need installing in order to build the linting env.
+.PHONY: install-lint-build-deps
+install-lint-build-deps:
 
-.PHONY: test-mypy
-test-mypy:
-	mypy rockcraft tests
 
-.PHONY: test-pydocstyle
-test-pydocstyle:
-	pydocstyle rockcraft
-
-.PHONY: test-pylint
-test-pylint:
-	pylint rockcraft
-	pylint tests --disable=invalid-name,missing-module-docstring,missing-function-docstring,redefined-outer-name,too-many-arguments,too-many-public-methods,no-member,import-outside-toplevel
-
-.PHONY: test-pyright
-test-pyright:
-	pyright .
-
-.PHONY: test-shellcheck
-test-shellcheck:
-	# shellcheck for shell scripts
-	git ls-files | file --mime-type -Nnf- | grep shellscript | cut -f1 -d: | xargs shellcheck
-	# shellcheck for bash commands inside spread task.yaml files
-	tools/external/utils/spread-shellcheck tests/spread/ spread.yaml
-
-.PHONY: test-sphinx-lint
-test-sphinx-lint:
-	sphinx-lint --ignore docs/sphinx-starter-pack/ --ignore docs/_build --ignore docs/env --max-line-length 80 -e all docs/*
-
-.PHONY: test-units
-test-units: ## Run unit tests.
-	pytest tests/unit
-
-.PHONY: test-docs
-test-docs: installdocs ## Run docs tests.
-	$(MAKE) -C docs linkcheck
-	$(MAKE) -C docs woke
-	$(MAKE) -C docs spelling
-
-.PHONY: tests
-tests: lint test-integrations test-units test-docs ## Run all tests.
+.PHONY: install-ajv-cli
+install-ajv-cli: install-npm
+ifneq ($(shell which ajv),)
+else
+	npm install -g ajv-cli
+endif

@@ -1,7 +1,9 @@
-How to get started - quick guide
-********************************
+.. _how-to-quickstart-guide:
 
-See the :ref:`tutorials` for a full getting started guide.
+Quickstart guide
+================
+
+See the :ref:`tutorial` for a full getting started guide.
 
 Getting started
 ---------------
@@ -149,5 +151,8 @@ The output will be similar to:
     :class: log-snippets
 
     rockcraft 0.0.1.dev1
+
+You can now check our simple :doc:`Hello World tutorial </tutorial/hello-world>`
+to see Rockcraft in action!
 
 .. _snap store: https://snapcraft.io/rockcraft

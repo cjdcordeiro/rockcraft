@@ -15,23 +15,21 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import contextlib
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
 import pytest
 from craft_providers import Executor, Provider, base
 
-# pylint: disable=import-outside-toplevel
 
-
-@pytest.fixture()
+@pytest.fixture
 def mock_instance():
     """Provide a mock instance (Executor)."""
-    _mock_instance = mock.Mock(spec=Executor)
-    return _mock_instance
+    return mock.Mock(spec=Executor)
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_extensions(monkeypatch):
     from rockcraft.extensions import registry
 
@@ -77,9 +75,11 @@ def fake_provider(mock_instance):
             project_name: str,
             project_path: Path,
             base_configuration: base.Base,
-            build_base: str | None = None,
             instance_name: str,
             allow_unstable: bool = False,
+            shutdown_delay_mins: int | None = None,
+            use_base_instance: bool = True,
+            prepare_instance: Callable[[Executor], None] | None = None,
         ):
             yield mock_instance
 
